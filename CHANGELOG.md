@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.2
+
+[compare changes](https://github.com/sigrea/core/compare/v0.7.1...v0.7.2)
+
+### 📖 Documentation
+
+- Clarify event-driven action examples ([#59](https://github.com/sigrea/core/pull/59))
+- Improve core package docs ([#60](https://github.com/sigrea/core/pull/60))
+- Link use package references ([#61](https://github.com/sigrea/core/pull/61))
+
+### ❤️ Contributors
+
+- Aose ([@aose-yuu](https://github.com/aose-yuu))
+
 ## v0.7.1
 
 [compare changes](https://github.com/sigrea/core/compare/v0.7.0...v0.7.1)

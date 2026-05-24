@@ -1,6 +1,6 @@
 {
 	"name": "@sigrea/core",
-	"version": "0.7.1",
+	"version": "0.7.2",
 	"description": "Reactive primitives, deep signals, and molecule lifecycles for Sigrea.",
 	"license": "MIT",
 	"type": "module",
