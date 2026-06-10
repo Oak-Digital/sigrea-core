@@ -8,6 +8,10 @@
 export { computed, isComputed } from "./core/computed";
 export type { Computed } from "./core/computed";
 
+// computed cyclic
+export { computedCyclic, isComputedCyclic } from "./core/computed-cyclic";
+export type { ComputedCyclic } from "./core/computed-cyclic";
+
 // deepSignal
 export {
 	deepSignal,
