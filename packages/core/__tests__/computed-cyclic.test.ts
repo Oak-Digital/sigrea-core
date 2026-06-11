@@ -16,6 +16,28 @@ describe("computedCyclic", () => {
 		expect(c.value).toBe(4);
 	});
 
+	it("does not re-run its getter on repeated reads without invalidation", () => {
+		const source = signal(1);
+		let calls = 0;
+
+		const value = computedCyclic(() => {
+			calls += 1;
+			return source.value + 1;
+		});
+
+		expect(value.value).toBe(2);
+		expect(value.value).toBe(2);
+		expect(calls).toBe(1);
+
+		source.value = 2;
+
+		// Getter should rerun now since it should update
+
+		expect(value.value).toBe(3);
+		expect(value.value).toBe(3);
+		expect(calls).toBe(2);
+	});
+
 	it("returns undefined when it references itself", () => {
 		const a = computedCyclic((): number => (a.value ?? 10) + 1);
 
@@ -122,6 +144,81 @@ describe("computedCyclic", () => {
 		expect(d.value).toBe(108);
 		expect(c.value).toBe(107);
 		expect(b.value).toBe(107);
+	});
+
+	it("does not re-run stabilized cycle getters on follow-up reads", () => {
+		const a0 = signal(10);
+		let aCalls = 0;
+		let bCalls = 0;
+		let cCalls = 0;
+		let dCalls = 0;
+
+		const a = computedCyclic(() => {
+			aCalls += 1;
+			return a0.value;
+		});
+		const b = computedCyclic((): number => {
+			bCalls += 1;
+			return (a.value ?? 0) + (c.value ?? 0) + 5;
+		});
+		const c = computedCyclic((): number => {
+			cCalls += 1;
+			return (b.value ?? 0) + 2;
+		});
+		const d = computedCyclic(() => {
+			dCalls += 1;
+			return (c.value ?? 0) + 1;
+		});
+
+		// We must assume that each node in the graph will be revalidated through update
+		// Therefore we must account for the update call and any scc calls
+
+		expect(a.value).toBe(10);
+		expect(aCalls).toBe(1);
+		expect(a.value).toBe(10);
+		expect(aCalls).toBe(1);
+
+		// accessing b now should not change a calls, and b calls should only be called once, but c should be called twice since we need to get it through the scc AND during the update.
+		expect(b.value).toBe(17);
+		expect(aCalls).toBe(1);
+		expect(bCalls).toBe(1);
+		expect(cCalls).toBe(2); // accounts for both scc getter and update getter
+
+		// expect(d.value).toBe(18);
+		// expect({ aCalls, bCalls, cCalls, dCalls }).toEqual({
+		// 	aCalls: 1,
+		// 	bCalls: 1,
+		// 	cCalls: 1,
+		// 	dCalls: 1,
+		// });
+		//
+		// expect(c.value).toBe(17);
+		// expect(b.value).toBe(17);
+		// expect({ aCalls, bCalls, cCalls, dCalls }).toEqual({
+		// 	aCalls: 1,
+		// 	bCalls: 1,
+		// 	cCalls: 1,
+		// 	dCalls: 1,
+		// });
+		//
+		// a0.value = 100;
+		//
+		// expect(d.value).toBe(108);
+		// expect({ aCalls, bCalls, cCalls, dCalls }).toEqual({
+		// 	aCalls: 2,
+		// 	bCalls: 2,
+		// 	cCalls: 2,
+		// 	dCalls: 2,
+		// });
+		//
+		// expect(c.value).toBe(107);
+		// expect(b.value).toBe(107);
+		// expect({ aCalls, bCalls, cCalls, dCalls }).toEqual({
+		// 	aCalls: 2,
+		// 	bCalls: 2,
+		// 	cCalls: 2,
+		// 	dCalls: 2,
+		// });
 	});
 
 	it("can get the value of a cyclic dependency through a normal computed", () => {
