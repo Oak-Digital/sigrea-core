@@ -221,6 +221,91 @@ describe("computedCyclic", () => {
 		// });
 	});
 
+	it("can resolve many conditional references", () => {
+		const a0 = signal(1);
+		const b0 = signal(false);
+		const c0 = signal(false);
+		const d0 = signal(false);
+
+		const conditionA = computedCyclic(
+			() => {
+				return d.value === true;
+			},
+			() => false,
+		);
+
+		const conditionB = computedCyclic(
+			() => {
+				return true;
+			},
+			() => false,
+		);
+
+		const conditionC = computedCyclic(
+			() => {
+				return b.value === true;
+			},
+			() => false,
+		);
+		const conditionD = computedCyclic(
+			() => {
+				return c.value === true;
+			},
+			() => false,
+		);
+
+		const a = computedCyclic(() => {
+			if (!conditionA.value) {
+				return undefined;
+			}
+			return a0.value;
+		});
+		const b = computedCyclic(() => {
+			if (!conditionB.value) {
+				return undefined;
+			}
+			return b0.value;
+		});
+		const c = computedCyclic(() => {
+			if (!conditionC.value) {
+				return undefined;
+			}
+			return c0.value;
+		});
+		const d = computedCyclic(() => {
+			if (!conditionD.value) {
+				return undefined;
+			}
+			return d0.value;
+		});
+
+		expect(b.value).toBe(false);
+		expect(c.value).toBeUndefined();
+		expect(d.value).toBeUndefined();
+		expect(a.value).toBeUndefined();
+
+		b0.value = true;
+
+		expect(b.value).toBe(true);
+		expect(c.value).toBe(false);
+		expect(d.value).toBeUndefined();
+		expect(a.value).toBeUndefined();
+
+		c0.value = true;
+
+		expect(b.value).toBe(true);
+		expect(c.value).toBe(true);
+		expect(d.value).toBe(false);
+		expect(a.value).toBeUndefined();
+
+		d0.value = true;
+
+		expect(b.value).toBe(true);
+		expect(c.value).toBe(true);
+		expect(d.value).toBe(true);
+		expect(a.value).toBe(1);
+	});
+
 	it("can get the value of a cyclic dependency through a normal computed", () => {
 		const a0 = signal(10);
 		const a = computedCyclic(
