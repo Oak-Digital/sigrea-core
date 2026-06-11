@@ -145,6 +145,35 @@ describe("computedCyclic", () => {
 		expect(d.value).toBe(108);
 	});
 
+	describe("caching", () => {
+		it("caches computed values and resets flags", () => {
+			const a0 = signal(10);
+			const a = computedCyclic(
+				() => a0.value,
+				() => 10,
+			);
+			const b = computedCyclic(
+				(): number => a.value + (c.value ?? 0) + 5,
+				() => 0,
+			);
+			const c = computedCyclic(
+				(): number => b.value + 2,
+				() => 0,
+			);
+			const d = computed(() => c.value + 1);
+
+			expect(d.value).toBe(18);
+
+			expect(d.currentValue).toBe(18);
+			expect(c.currentValue).toBe(17);
+
+			a0.value = 100;
+			expect(d.value).toBe(108);
+			expect(d.currentValue).toBe(108);
+			expect(c.currentValue).toBe(107);
+		});
+	});
+
 	describe("effect", () => {
 		// TODO: fix these tests somehow, I might be using effect wrong
 		it.skip("when a computedCyclic changes it should trigger an effect", () => {
