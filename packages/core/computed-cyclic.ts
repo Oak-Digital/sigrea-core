@@ -10,7 +10,6 @@ import {
 	link,
 	setActiveSubscriber,
 	shallowPropagate,
-	shouldUpdate,
 	unlink,
 	untracked,
 } from "./reactivity";
@@ -23,6 +22,7 @@ const COMPUTED_CYCLIC_BRAND = Symbol("sigrea.isComputedCyclic");
 type Context = {
 	stack: ComputedCyclic[];
 	stackNodes: Set<ComputedCyclic>;
+	provisionalNodes: Set<ComputedCyclic>;
 	/** From where the current scc starts, by default there are no scc */
 	sccHead: number | undefined;
 	/** To where the current scc ends */
@@ -46,6 +46,7 @@ export function setNewActiveContext() {
 	activeContext = {
 		stack: [],
 		stackNodes: new Set(),
+		provisionalNodes: new Set(),
 		sccHead: undefined,
 		sccTail: undefined,
 	};
@@ -102,6 +103,122 @@ export class ComputedCyclic<T = unknown, S = unknown> implements ReactiveNode {
 		return true;
 	}
 
+	private evaluate(): {
+		result: T;
+		changed: boolean;
+		isProvisional: boolean;
+	} {
+		const hadValue = this.currentValue !== undefined;
+		incrementCycle();
+		this.depsTail = undefined;
+		const previousFlags = this.flags;
+		this.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
+		const previousSubscriber = getActiveSubscriber();
+		setActiveSubscriber(this);
+		const previousContext = activeContext;
+		activeContext ??= {
+			sccHead: undefined,
+			sccTail: undefined,
+			stack: [],
+			stackNodes: new Set(),
+			provisionalNodes: new Set(),
+		};
+		const context = activeContext;
+		context.stack.push(this);
+		context.stackNodes.add(this);
+		let result!: T;
+		let changed = false;
+		let isInScc = false;
+		let isProvisional = false;
+		try {
+			result = this.getter();
+			isInScc = this.isInScc();
+			isProvisional = context.provisionalNodes.has(this);
+			if (!isInScc) {
+				changed = hasChanged(this.currentValue, result);
+				this.currentValue = result;
+				if (previousSubscriber === undefined && !hadValue) {
+					let dep = this.deps;
+					while (dep !== undefined) {
+						const candidate = dep.dep as Partial<ComputedCyclic>;
+						if (
+							candidate[COMPUTED_CYCLIC_BRAND] === true &&
+							candidate.currentValue === undefined &&
+							candidate.flags === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)
+						) {
+							(candidate as ComputedCyclic).evaluate();
+						}
+						dep = dep.nextDep;
+					}
+				}
+			}
+			return {
+				result,
+				changed,
+				isProvisional,
+			};
+		} finally {
+			setActiveSubscriber(previousSubscriber);
+			if (isInScc) {
+				this.flags = previousFlags;
+			} else if (isProvisional) {
+				let shouldPromote = previousSubscriber === undefined && !hadValue;
+				if (shouldPromote) {
+					shouldPromote = false;
+					let dep = this.deps;
+					while (dep !== undefined) {
+						const candidate = dep.dep as Partial<ComputedCyclic>;
+						if (candidate.currentValue !== undefined) {
+							shouldPromote = true;
+							break;
+						}
+						dep = dep.nextDep;
+					}
+				}
+				this.flags = shouldPromote
+					? ReactiveFlags.Mutable
+					: ReactiveFlags.Mutable | ReactiveFlags.Dirty;
+				if (shouldPromote) {
+					let dep = this.deps;
+					while (dep !== undefined) {
+						const candidate = dep.dep as Partial<ComputedCyclic>;
+						if (
+							candidate.currentValue !== undefined &&
+							candidate.flags === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)
+						) {
+							candidate.flags = ReactiveFlags.Mutable;
+						}
+						dep = dep.nextDep;
+					}
+				}
+			} else {
+				this.flags &= ~ReactiveFlags.RecursedCheck;
+			}
+			if (!isInScc) {
+				let toRemove =
+					this.depsTail !== undefined
+						? (this.depsTail as Link).nextDep
+						: this.deps;
+				while (toRemove !== undefined) {
+					toRemove = unlink(toRemove, this);
+				}
+			}
+			context.stack.pop();
+			context.stackNodes.delete(this);
+			context.provisionalNodes.delete(this);
+			const currentStackIndex = context.stack.length - 1;
+			if (currentStackIndex === context.sccHead) {
+				context.sccHead = undefined;
+				context.sccTail = undefined;
+			} else if (context.sccTail !== undefined) {
+				context.sccTail--;
+			}
+			if (previousContext === undefined && context.stack.length === 0) {
+				activeContext = undefined;
+			}
+		}
+	}
+
 	get(): T | S {
 		if (this.isCyclic()) {
 			// biome-ignore lint/style/noNonNullAssertion: if we are not in a context we cannot be in a cycle
@@ -114,72 +231,35 @@ export class ComputedCyclic<T = unknown, S = unknown> implements ReactiveNode {
 				context.sccHead ?? Number.POSITIVE_INFINITY,
 				prevOccuranceIndex,
 			);
+			for (let index = prevOccuranceIndex; index < context.stack.length; index++) {
+				context.provisionalNodes.add(context.stack[index] as ComputedCyclic);
+			}
 
 			return this.stabilizer();
 		}
-		if (!shouldUpdate(this)) {
+		let value: T | S;
+		if (this.flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) {
 			const subscriber = getActiveSubscriber();
-			if (subscriber !== undefined) {
-				link(this, subscriber, getCurrentCycle());
+			const { result, changed, isProvisional } = this.evaluate();
+			if (isProvisional && subscriber !== undefined) {
+				subscriber.flags |= ReactiveFlags.Dirty;
 			}
-			// biome-ignore lint/style/noNonNullAssertion: Since we should not update we know the value must have been set
-			const value = this.currentValue!;
-			return value;
-		}
-
-		// At this point we know that something in the graph is dirty
-		activeContext ??= {
-			sccHead: undefined,
-			sccTail: undefined,
-			stack: [],
-			stackNodes: new Set(),
-		};
-		const context = activeContext;
-		context.stack.push(this);
-		context.stackNodes.add(this);
-		// console.log("context", context);
-		// Run getter and only update if not part of the scc
-		try {
-			// REFACTOR: this currently causes the call to be recursive
-			const result = this.getter();
-			// Calling the getter will now have updated the context so we know if we are in a scc
-			const isInScc = this.isInScc();
-			if (isInScc) {
-				return result;
-			}
-			const changed = hasChanged(this.currentValue, result);
-			if (changed) {
-				this.currentValue = result;
+			if (changed && !isProvisional) {
 				const subs = this.subs;
 				if (subs !== undefined) {
 					shallowPropagate(subs);
 				}
 			}
-			return result;
-		} finally {
-			context.stack.pop();
-			context.stackNodes.delete(this);
-			const currentStackIndex = context.stack.length - 1;
-			if (currentStackIndex === context.sccHead) {
-				context.sccHead = undefined;
-				context.sccTail = undefined;
-			} else if (context.sccTail !== undefined) {
-				context.sccTail--;
-			}
+			value = result;
+		} else {
+			// biome-ignore lint/style/noNonNullAssertion: Since we should not update we know the value must have been set
+			value = this.currentValue!;
 		}
-
-		// if (this.update()) {
-		// 	const subs = this.subs;
-		// 	if (subs !== undefined) {
-		// 		shallowPropagate(subs);
-		// 	}
-		// }
-		// const subscriber = getActiveSubscriber();
-		// if (subscriber !== undefined) {
-		// 	link(this, subscriber, getCurrentCycle());
-		// }
-		// const value = this.currentValue;
-		// return value!;
+		const subscriber = getActiveSubscriber();
+		if (subscriber !== undefined) {
+			link(this, subscriber, getCurrentCycle());
+		}
+		return value;
 	}
 
 	get value(): T | S {
@@ -198,33 +278,8 @@ export class ComputedCyclic<T = unknown, S = unknown> implements ReactiveNode {
 	}
 
 	update(): boolean {
-		incrementCycle();
-		this.depsTail = undefined;
-		this.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
-		const previous = getActiveSubscriber();
-		setActiveSubscriber(this);
-		const prevContext = setNewActiveContext();
-		// biome-ignore lint/style/noNonNullAssertion: Non-null assertion because we just updated it in the line above
-		const constex = activeContext!;
-		constex.stack.push(this);
-		constex.stackNodes.add(this);
-		try {
-			const nextValue = this.getter();
-			const changed = hasChanged(this.currentValue, nextValue);
-			this.currentValue = nextValue;
-			return changed;
-		} finally {
-			setActiveSubscriber(previous);
-			setActiveContext(prevContext);
-			this.flags &= ~ReactiveFlags.RecursedCheck;
-			let toRemove =
-				this.depsTail !== undefined
-					? (this.depsTail as Link).nextDep
-					: this.deps;
-			while (toRemove !== undefined) {
-				toRemove = unlink(toRemove, this);
-			}
-		}
+		const { changed, isProvisional } = this.evaluate();
+		return changed && !isProvisional;
 	}
 }
 
