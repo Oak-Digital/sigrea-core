@@ -354,6 +354,44 @@ describe("computedCyclic", () => {
 			expect(d.currentValue).toBe(108);
 			expect(c.currentValue).toBe(107);
 		});
+
+		it("caches the entrypoints of multiple SCCs", () => {
+			const a = computedCyclic(
+				(): number => b.value,
+				() => 0,
+			);
+			const b = computedCyclic(
+				() => a.value + c.value,
+				() => 0,
+			);
+
+			const c = computedCyclic(
+				(): number => d.value,
+				() => 0,
+			);
+			const d = computedCyclic(
+				() => c.value + e.value,
+				() => 0,
+			);
+
+			const e = signal(0);
+
+			// Two SCCs exists here (a, b) and (c, d).
+			// b is dependant on c, but c is not dependant on the other SCC, thus c is the entrypoint for the SCC and can be cached.
+
+			expect(c.currentValue).toBe(undefined);
+			expect(a.value).toBe(0);
+			// calling a.value should trigger the caches to be updated
+			expect(c.currentValue).toBe(0);
+			expect(a.currentValue).toBe(0);
+
+			e.value = 10;
+
+			expect(a.value).toBe(10);
+			// calling a.value should trigger the caches to be updated
+			expect(c.currentValue).toBe(10);
+			expect(a.currentValue).toBe(10);
+		});
 	});
 
 	describe("effect", () => {
